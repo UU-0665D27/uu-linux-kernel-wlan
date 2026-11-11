@@ -12,6 +12,15 @@
 `high` переиспользует `raw` для инъекции и `uu-linux-kernel-netlink` для
 команд `nl80211`.
 
+## Подключение
+
+```toml
+[dependencies]
+uu-linux-kernel-wlan = { git = "https://github.com/UU-0665D27/uu-linux-kernel-wlan", branch = "main" }
+```
+
+Логирование включается фичей: `features = ["tracing"]`.
+
 ## Требования
 
 - Linux;

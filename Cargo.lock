@@ -120,6 +120,7 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 [[package]]
 name = "uu-linux-kernel-netlink"
 version = "0.1.0"
+source = "git+https://github.com/UU-0665D27/uu-linux-kernel-netlink?branch=main#381eb236beafc1104ca4d48e7f9e0b658a85d116"
 dependencies = [
  "libc",
  "thiserror",
@@ -140,3 +141,4 @@ dependencies = [
 [[package]]
 name = "uu-wlan-wps-pin-gen"
 version = "0.1.0"
+source = "git+https://github.com/UU-0665D27/uu-wlan-wps-pin-gen?branch=main#a9a1485b7786fccf4b0e23e67af017bd490caa36"

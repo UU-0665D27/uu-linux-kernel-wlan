@@ -3,6 +3,7 @@ name = "uu-linux-kernel-wlan"
 version = "0.1.0"
 edition = "2024"
 description = "Инъекция 802.11 кадров и управление WLAN через nl80211"
+repository = "https://github.com/UU-0665D27/uu-linux-kernel-wlan"
 license = "MIT OR Apache-2.0"
 
 [features]
@@ -13,8 +14,8 @@ tracing = ["dep:tracing", "uu-linux-kernel-netlink/tracing"]
 libc = "0.2"
 thiserror = "2"
 tracing = { version = "0.1", optional = true }
-uu-linux-kernel-netlink = { path = "../uu-linux-kernel-netlink" }
-uu-wlan-wps-pin-gen = { path = "../uu-wlan-wps-pin-gen" }
+uu-linux-kernel-netlink = { git = "https://github.com/UU-0665D27/uu-linux-kernel-netlink", branch = "main" }
+uu-wlan-wps-pin-gen = { git = "https://github.com/UU-0665D27/uu-wlan-wps-pin-gen", branch = "main" }
 
 [lints.clippy]
 all = "deny"
