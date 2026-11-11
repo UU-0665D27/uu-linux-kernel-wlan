@@ -1,0 +1,26 @@
+[package]
+name = "uu-linux-kernel-wlan"
+version = "0.1.0"
+edition = "2024"
+description = "Инъекция 802.11 кадров и управление WLAN через nl80211"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+tracing = ["dep:tracing", "uu-linux-kernel-netlink/tracing"]
+
+[dependencies]
+libc = "0.2"
+thiserror = "2"
+tracing = { version = "0.1", optional = true }
+uu-linux-kernel-netlink = { path = "../uu-linux-kernel-netlink" }
+uu-wlan-wps-pin-gen = { path = "../uu-wlan-wps-pin-gen" }
+
+[lints.clippy]
+all = "deny"
+pedantic = "deny"
+nursery = "deny"
+perf = "deny"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
