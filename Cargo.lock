@@ -120,7 +120,7 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 [[package]]
 name = "uu-linux-kernel-netlink"
 version = "0.1.0"
-source = "git+https://github.com/UU-0665D27/uu-linux-kernel-netlink?branch=main#381eb236beafc1104ca4d48e7f9e0b658a85d116"
+source = "git+https://github.com/UU-0665D27/uu-linux-kernel-netlink?branch=main#76130f27a409034e2e04376a9f729607558b9df0"
 dependencies = [
  "libc",
  "thiserror",

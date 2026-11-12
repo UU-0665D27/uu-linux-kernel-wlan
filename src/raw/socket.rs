@@ -236,20 +236,25 @@ impl PacketSocket {
 
     /// Устанавливает таймаут чтения (`SO_RCVTIMEO`).
     ///
+    /// `None` сбрасывает таймаут: чтение снова блокирующее.
+    ///
     /// # Errors
     ///
-    /// Возвращает [`Error::Io`] при ошибке `setsockopt(2)`.
+    /// Возвращает [`Error::Io`] при ошибке `setsockopt(2)` и
+    /// [`Error::OutOfRange`], если длительность не помещается в `timeval`.
     pub fn set_recv_timeout(&self, timeout: Option<Duration>) -> Result<()> {
-        let (secs, usecs) = timeout.map_or((0, 0), |duration| {
-            (
-                libc::time_t::try_from(duration.as_secs()).unwrap_or(libc::time_t::MAX),
-                libc::suseconds_t::from(duration.subsec_micros()),
-            )
-        });
-        let tv = libc::timeval {
-            tv_sec: secs,
-            tv_usec: usecs,
-        };
+        // SAFETY: `timeval` состоит из целых чисел, нулевое значение валидно
+        // и означает отсутствие таймаута.
+        let mut tv: libc::timeval = unsafe { std::mem::zeroed() };
+        if let Some(duration) = timeout {
+            tv.tv_sec = duration
+                .as_secs()
+                .try_into()
+                .map_err(|_| Error::OutOfRange(i64::MAX))?;
+            let usecs =
+                i32::try_from(duration.subsec_micros()).map_err(|_| Error::OutOfRange(i64::MAX))?;
+            tv.tv_usec = usecs.into();
+        }
         // SAFETY: tv живёт до конца вызова, длина соответствует типу.
         let rc = unsafe {
             libc::setsockopt(
