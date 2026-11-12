@@ -44,6 +44,8 @@ pub const DEFAULT_ASSOC_TIMEOUT: Duration = Duration::from_secs(20);
 const EAP_RECV_TIMEOUT: Duration = Duration::from_secs(3);
 /// Интервал опроса статуса ассоциации.
 const ASSOC_POLL: Duration = Duration::from_millis(250);
+/// `NL80211_CMD_GET_STATION`.
+const CMD_GET_STATION: u8 = 17;
 /// `NL80211_BSS_STATUS_ASSOCIATED`.
 const BSS_STATUS_ASSOCIATED: u32 = 1;
 /// Верхняя граница длины WSC-сообщения (как в hostap).
@@ -82,22 +84,35 @@ impl Wlan {
             return Err(Error::Message("SSID must contain 1..=32 bytes".to_string()));
         }
         let bssid = validate_unicast(bssid)?;
+        info!(
+            ifname = %self.iface.name,
+            %bssid,
+            ssid_len = ssid.len(),
+            pin_len = pin.len(),
+            "starting WPS PIN enrolment"
+        );
+
         self.ensure_station()?;
         if self.disconnect().is_err() {
-            trace!("disconnect before WPS failed");
+            debug!("no current connection to disconnect");
+        } else {
+            debug!("disconnected from the current network");
         }
 
         let local = MacAddr::new(self.iface.mac);
         let enrollee = WpsEnrollee::new(local, pin)?;
+        debug!(%local, "local enrollee MAC");
 
-        let frequency = self.scan_target(bssid)?.map(|bss| bss.frequency);
+        let target = self.scan_target(bssid)?;
+        let frequency = target.as_ref().map(|bss| bss.frequency);
         self.connect_wps(ssid, bssid, frequency)?;
-        self.wait_for_association(bssid, DEFAULT_ASSOC_TIMEOUT)?;
+        self.wait_for_association(bssid, target.as_ref(), DEFAULT_ASSOC_TIMEOUT)?;
 
         let mut session = Session::new(&self.socket, local, bssid, enrollee);
         let credentials = session.run(timeout)?;
-        trace!(
+        info!(
             ssid = %String::from_utf8_lossy(&credentials.ssid),
+            psk_len = credentials.psk().len(),
             "WPS credentials received"
         );
         Ok(credentials)
@@ -116,12 +131,24 @@ impl Wlan {
 
     /// Ищет `BSSID` в результатах сканирования.
     fn scan_target(&mut self, bssid: MacAddr) -> Result<Option<Bss>> {
+        debug!(%bssid, "scanning for the target BSSID");
         let mut found = None;
         self.scan_each_with(DEFAULT_SCAN_WAIT, |bss| {
             if found.is_none() && bss.bssid == bssid {
                 found = Some(bss);
             }
         })?;
+        debug!(
+            found = found.is_some(),
+            frequency = found.as_ref().map(|bss| bss.frequency),
+            channel = found.as_ref().and_then(Bss::channel),
+            wps = found.as_ref().is_some_and(Bss::is_wps),
+            signal_dbm = found.as_ref().and_then(|bss| bss.signal_dbm),
+            "scan for the target BSSID finished"
+        );
+        if found.is_none() {
+            warn!(%bssid, "target BSSID is not present in scan results");
+        }
         Ok(found)
     }
 
@@ -143,16 +170,54 @@ impl Wlan {
             attrs.u32(ATTR_WIPHY_FREQ, freq);
         }
 
+        debug!(
+            ifname = %self.iface.name,
+            %bssid,
+            ?frequency,
+            ie_len = ies.as_bytes().len(),
+            "requesting association with WPS IE"
+        );
         let family = self.nl.family_id();
         self.nl.genl_mut().execute(family, CMD_CONNECT, 0, &attrs)?;
-        trace!(len = ssid.len(), "WPS connect requested");
+        trace!(len = ssid.len(), "connect command acknowledged");
         Ok(())
     }
 
-    /// Ждёт, пока `nl80211` сообщит об ассоциации с `bssid`.
-    fn wait_for_association(&mut self, bssid: MacAddr, timeout: Duration) -> Result<()> {
+    /// Ждёт, пока интерфейс ассоциируется с `bssid`.
+    fn wait_for_association(
+        &mut self,
+        bssid: MacAddr,
+        target: Option<&Bss>,
+        timeout: Duration,
+    ) -> Result<()> {
+        #[cfg(feature = "tracing")]
+        let started = Instant::now();
         let deadline = deadline_after(timeout)?;
+        debug!(%bssid, ?timeout, "waiting for association");
         loop {
+            if let Some(station) = self.station_bssid() {
+                if station == bssid.octets() {
+                    info!(
+                        %bssid,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "associated with the target AP"
+                    );
+                    return Ok(());
+                }
+                let other = MacAddr::new(station);
+                error!(
+                    %bssid,
+                    %other,
+                    ifname = %self.iface.name,
+                    "associated with a different BSSID"
+                );
+                return Err(Error::Message(format!(
+                    "{} associated with {other} instead of {bssid}; stop \
+                     NetworkManager/wpa_supplicant/iwd so they do not override the connection",
+                    self.iface.name
+                )));
+            }
+
             let mut associated = false;
             if self
                 .scan_each(|bss| {
@@ -162,19 +227,53 @@ impl Wlan {
                 })
                 .is_err()
             {
-                trace!("association status is not available yet");
+                trace!("scan results are not available yet");
             }
             if associated {
-                trace!("associated with AP");
+                info!(%bssid, "association reported by scan results");
                 return Ok(());
             }
+
             if Instant::now() >= deadline {
+                let hint = target.map_or(", target BSS was not found in scan results", |_| "");
+                error!(%bssid, "association timed out");
                 return Err(Error::Message(format!(
-                    "timed out waiting for association with {bssid}"
+                    "timed out waiting for association with {bssid}{hint}; stop \
+                     NetworkManager/wpa_supplicant/iwd so they do not override the connection"
                 )));
             }
+            trace!(
+                elapsed_ms = started.elapsed().as_millis(),
+                "still not associated"
+            );
             std::thread::sleep(ASSOC_POLL);
         }
+    }
+
+    /// Возвращает `BSSID` station-записи интерфейса, если она есть.
+    ///
+    /// В managed-режиме `NL80211_CMD_GET_STATION` отдаёт текущую точку
+    /// доступа, поэтому запись означает состоявшуюся ассоциацию.
+    fn station_bssid(&mut self) -> Option<[u8; 6]> {
+        let mut station = None;
+        let mut attrs = AttrWriter::new();
+        attrs.u32(ATTR_IFINDEX, self.iface.index);
+        let family = self.nl.family_id();
+        let result = self
+            .nl
+            .genl_mut()
+            .dump_each(family, CMD_GET_STATION, 0, &attrs, |message| {
+                for (kind, value) in message.attrs() {
+                    if kind == ATTR_MAC && station.is_none() {
+                        station = <[u8; 6]>::try_from(value).ok();
+                    }
+                }
+                Ok(())
+            });
+        if result.is_err() {
+            trace!("station dump failed");
+        }
+        station
     }
 }
 
@@ -218,9 +317,11 @@ impl<'a> Session<'a> {
     fn run(&mut self, timeout: Duration) -> Result<WpsCredentials> {
         self.socket.set_recv_timeout(Some(EAP_RECV_TIMEOUT))?;
         let deadline = deadline_after(timeout)?;
+        info!(?timeout, "starting EAP-WSC exchange");
         self.send_eapol_start()?;
         loop {
             if Instant::now() >= deadline {
+                error!("EAP-WSC exchange timed out");
                 return Err(Error::Message("WPS exchange timed out".to_string()));
             }
             let frame = match self.socket.recv() {
@@ -231,10 +332,12 @@ impl<'a> Session<'a> {
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                     ) =>
                 {
+                    trace!("no EAPOL frame within the read timeout");
                     continue;
                 }
                 Err(error) => return Err(error),
             };
+            trace!(len = frame.len(), "EAPOL frame received");
             if let Some(credentials) = self.handle_frame(&frame)? {
                 return Ok(credentials);
             }
@@ -255,15 +358,26 @@ impl<'a> Session<'a> {
             return Ok(None);
         }
         let Some(eapol) = Eapol::parse(body) else {
+            trace!(len = body.len(), "ignoring malformed EAPOL frame");
             return Ok(None);
         };
         if eapol.packet_type != EAPOL_TYPE_EAP {
+            trace!(
+                packet_type = eapol.packet_type,
+                "ignoring non-EAP EAPOL frame"
+            );
             return Ok(None);
         }
         match eapol.body.first().copied() {
             Some(EAP_REQUEST) => self.handle_request(eapol.body),
-            Some(EAP_FAILURE) => Err(Error::Message("WPS registrar reported failure".to_string())),
-            _ => Ok(None),
+            Some(EAP_FAILURE) => {
+                error!("registrar sent EAP-Failure");
+                Err(Error::Message("WPS registrar reported failure".to_string()))
+            }
+            _ => {
+                trace!("ignoring non-request EAP packet");
+                Ok(None)
+            }
         }
     }
 
@@ -274,31 +388,45 @@ impl<'a> Session<'a> {
         };
         match eap.packet_type {
             EAP_TYPE_IDENTITY => {
+                debug!(id = eap.id, "EAP-Request/Identity");
                 let response = eap_identity(EAP_RESPONSE, eap.id, WPS_IDENTITY_ENROLLEE)?;
                 self.send_eap(&response)?;
+                trace!("EAP-Response/Identity sent");
                 Ok(None)
             }
             EAP_TYPE_EXPANDED => {
                 let Some(expanded) = EapExpanded::parse(body) else {
+                    trace!(len = body.len(), "ignoring malformed EAP-Expanded");
                     return Ok(None);
                 };
                 if expanded.vendor_id != WPS_VENDOR_ID || expanded.vendor_type != WPS_VENDOR_TYPE {
+                    trace!(
+                        vendor = ?expanded.vendor_id,
+                        vendor_type = expanded.vendor_type,
+                        "ignoring foreign EAP-Expanded vendor"
+                    );
                     return Ok(None);
                 }
                 self.handle_wsc(eap.id, expanded.data)
             }
-            _ => Ok(None),
+            _ => {
+                trace!("ignoring EAP request type");
+                Ok(None)
+            }
         }
     }
 
     /// Разбирает WSC-заголовок и собирает фрагменты.
     fn handle_wsc(&mut self, id: u8, data: &[u8]) -> Result<Option<WpsCredentials>> {
         let Some(&op_code) = data.first() else {
+            warn!("WSC frame has no op-code");
             return Ok(None);
         };
         let Some(&flags) = data.get(1) else {
+            warn!("WSC frame has no flags");
             return Ok(None);
         };
+        trace!(op_code, flags, len = data.len(), "WSC frame");
         let position = if flags & WSC_FLAG_LF != 0 {
             let Some(length_bytes) = data.get(2..4) else {
                 return Ok(None);
@@ -307,6 +435,7 @@ impl<'a> Session<'a> {
                 <[u8; 2]>::try_from(length_bytes).map_err(|_| Error::Malformed)?,
             ));
             if total > WSC_MAX_MESSAGE {
+                warn!(total, limit = WSC_MAX_MESSAGE, "WSC message is too long");
                 return Ok(None);
             }
             4
@@ -318,6 +447,7 @@ impl<'a> Session<'a> {
         };
 
         if op_code == WSC_OP_FRAG_ACK {
+            debug!("registrar acknowledged a WSC fragment");
             if let Some(outgoing) = self.outgoing.as_mut() {
                 outgoing.send_next(self.socket, self.local, id)?;
                 if outgoing.is_complete() {
@@ -328,15 +458,27 @@ impl<'a> Session<'a> {
         }
 
         if self.in_op != Some(op_code) {
+            if !self.in_buf.is_empty() {
+                trace!(
+                    old_op = ?self.in_op,
+                    op_code,
+                    "restarting a fragmented WSC message"
+                );
+            }
             self.in_buf.clear();
             self.in_op = Some(op_code);
         }
         self.in_buf.extend_from_slice(payload);
         if flags & WSC_FLAG_MF != 0 {
+            trace!(
+                buffered = self.in_buf.len(),
+                "waiting for the next WSC fragment"
+            );
             return Ok(None);
         }
         let message = std::mem::take(&mut self.in_buf);
         self.in_op = None;
+        trace!(len = message.len(), "WSC message assembled");
         self.handle_wsc_message(id, op_code, &message)
     }
 
@@ -347,17 +489,27 @@ impl<'a> Session<'a> {
         op_code: u8,
         message: &[u8],
     ) -> Result<Option<WpsCredentials>> {
+        trace!(op_code, len = message.len(), "handling WSC op-code");
         match op_code {
             WSC_OP_START => {
+                debug!("registrar started WSC; sending M1");
                 let m1 = self.enrollee.m1()?;
                 self.send_wsc(id, WSC_OP_MSG, &m1)?;
                 Ok(None)
             }
             WSC_OP_MSG => self.handle_message(id, message),
-            WSC_OP_NACK => Err(Error::Message(
-                "WPS registrar rejected the exchange".to_string(),
-            )),
-            _ => Ok(None),
+            WSC_OP_NACK => {
+                let reason = crate::high::wps_enrollee::config_error(message);
+                error!(?reason, "registrar sent WSC NACK");
+                Err(Error::Message(reason.map_or_else(
+                    || "WPS registrar rejected the exchange".to_string(),
+                    |code| format!("WPS registrar rejected the exchange (error {code:#06x})"),
+                )))
+            }
+            _ => {
+                trace!("ignoring unsolicited WSC op-code");
+                Ok(None)
+            }
         }
     }
 
@@ -366,29 +518,37 @@ impl<'a> Session<'a> {
         let Some(kind) = message_type(message) else {
             return Err(Error::Malformed);
         };
+        debug!(kind, len = message.len(), "WPS message received");
         match kind {
             WPS_MSG_M2 => {
                 let m3 = self.enrollee.process_m2(message)?;
+                debug!("M2 processed; sending M3");
                 self.send_wsc(id, WSC_OP_MSG, &m3)?;
                 Ok(None)
             }
             WPS_MSG_M4 => {
                 let m5 = self.enrollee.process_m4(message)?;
+                debug!("M4 processed; sending M5");
                 self.send_wsc(id, WSC_OP_MSG, &m5)?;
                 Ok(None)
             }
             WPS_MSG_M6 => {
                 let m7 = self.enrollee.process_m6(message)?;
+                debug!("M6 processed; sending M7");
                 self.send_wsc(id, WSC_OP_MSG, &m7)?;
                 Ok(None)
             }
             WPS_MSG_M8 => {
                 let credentials = self.enrollee.process_m8(message)?;
+                info!("M8 processed; sending WSC_Done");
                 let done = self.enrollee.wsc_done_message()?;
                 self.send_wsc(id, WSC_OP_DONE, &done)?;
                 Ok(Some(credentials))
             }
-            WPS_MSG_M2D => Ok(None),
+            WPS_MSG_M2D => {
+                warn!("registrar sent M2D: it does not support this PIN method");
+                Ok(None)
+            }
             _ => Err(Error::Message(format!(
                 "unexpected WPS message type {kind:#04x}"
             ))),
@@ -397,6 +557,7 @@ impl<'a> Session<'a> {
 
     /// Отправляет `EAP-Response/Expanded` с WSC-сообщением.
     fn send_wsc(&mut self, id: u8, op_code: u8, payload: &[u8]) -> Result<()> {
+        trace!(op_code, len = payload.len(), "sending WSC message");
         let mut outgoing = Outgoing::new(op_code, payload);
         outgoing.send_next(self.socket, self.local, id)?;
         if outgoing.is_complete() {

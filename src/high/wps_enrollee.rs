@@ -109,6 +109,13 @@ pub struct WpsEnrollee {
     state: State,
 }
 
+/// Извлекает `Configuration Error` из сообщения `WSC_NACK`.
+#[must_use]
+pub fn config_error(message: &[u8]) -> Option<u16> {
+    let value = tlv_value(message, WPS_ATTR_CONFIG_ERROR)?;
+    <[u8; 2]>::try_from(value).ok().map(u16::from_be_bytes)
+}
+
 impl WpsEnrollee {
     /// Создаёт сеанс для `PIN`, введённого пользователем.
     ///
@@ -214,6 +221,7 @@ impl WpsEnrollee {
         writer.u32(WPS_ATTR_OS_VERSION, 0x8000_0000)?;
 
         let message = writer.finish();
+        debug!(len = message.len(), "M1 built");
         self.last_message.clone_from(&message);
         self.state = State::WaitM2;
         Ok(message)
@@ -237,6 +245,7 @@ impl WpsEnrollee {
             return Err(Error::Message("WPS M2 Public Key is empty".to_string()));
         }
 
+        debug!(public_key_len = public_key_r.len(), "M2 parsed");
         self.nonce_r = nonce_r;
         self.public_key_r = public_key_r.to_vec();
         self.derive_keys()?;
@@ -270,10 +279,12 @@ impl WpsEnrollee {
 
         let expected = self.hash_with_psk(r_snonce1, &self.psk1);
         if !constant_time_eq(&expected, &r_hash1) {
+            warn!("R-Hash1 mismatch: the PIN is probably wrong");
             return Err(Error::Message(
                 "WPS R-Hash1 does not match the PIN".to_string(),
             ));
         }
+        debug!("M4 authenticator and R-Hash1 verified");
         self.r_hash1 = r_hash1;
         self.r_hash2 = r_hash2;
 
@@ -304,10 +315,12 @@ impl WpsEnrollee {
 
         let expected = self.hash_with_psk(r_snonce2, &self.psk2);
         if !constant_time_eq(&expected, &self.r_hash2) {
+            warn!("R-Hash2 mismatch: the PIN is probably wrong");
             return Err(Error::Message(
                 "WPS R-Hash2 does not match the PIN".to_string(),
             ));
         }
+        debug!("M6 authenticator and R-Hash2 verified");
 
         self.last_message.clone_from(&message.to_vec());
         let m7 = self.build_m7()?;
@@ -344,6 +357,14 @@ impl WpsEnrollee {
             .to_vec();
         let mac_addr = tlv_value(credential, WPS_ATTR_MAC_ADDR).and_then(MacAddr::from_bytes);
 
+        debug!(
+            ssid_len = ssid.len(),
+            key_len = network_key.len(),
+            auth_type,
+            encryption_type,
+            mac = ?mac_addr,
+            "M8 credentials parsed"
+        );
         self.state = State::Done;
         Ok(WpsCredentials {
             ssid,
@@ -366,6 +387,7 @@ impl WpsEnrollee {
         writer.u8(WPS_ATTR_MESSAGE_TYPE, WPS_MSG_DONE)?;
         writer.push(WPS_ATTR_ENROLLEE_NONCE, &self.nonce_e)?;
         writer.push(WPS_ATTR_REGISTRAR_NONCE, &self.nonce_r)?;
+        debug!("WSC_Done built");
         Ok(writer.finish())
     }
 
@@ -384,8 +406,10 @@ impl WpsEnrollee {
         let nonce = tlv_value(message, WPS_ATTR_ENROLLEE_NONCE)
             .ok_or_else(|| Error::Message("WPS message has no Enrollee Nonce".to_string()))?;
         if nonce.len() != NONCE_LEN || !constant_time_eq(nonce, &self.nonce_e) {
+            warn!("enrollee nonce mismatch");
             return Err(Error::Message("WPS Enrollee Nonce mismatch".to_string()));
         }
+        trace!("enrollee nonce verified");
         Ok(())
     }
 
@@ -398,8 +422,10 @@ impl WpsEnrollee {
         let prefix = message.get(..offset).ok_or(Error::Malformed)?;
         let expected = hmac_sha256(&self.authkey, &[&self.last_message, prefix]);
         if !constant_time_eq(&expected, authenticator) {
+            warn!("Authenticator mismatch");
             return Err(Error::Message("WPS Authenticator mismatch".to_string()));
         }
+        trace!("Authenticator verified");
         Ok(())
     }
 
@@ -424,6 +450,7 @@ impl WpsEnrollee {
         };
         self.psk1 = hmac_sha256(&self.authkey, &[first]);
         self.psk2 = hmac_sha256(&self.authkey, &[second]);
+        trace!("DH shared secret and WPS keys derived");
         Ok(())
     }
 
@@ -940,6 +967,14 @@ mod tests {
             find_tlv_offset(&m1, WPS_ATTR_PUBLIC_KEY).map(|(_, value)| value.len()),
             Some(192)
         );
+    }
+
+    #[test]
+    fn reads_config_error_from_nack() {
+        let mut writer = WpsTlvWriter::new();
+        writer.u16(WPS_ATTR_CONFIG_ERROR, 0x000d).unwrap();
+        let message = writer.finish();
+        assert_eq!(super::config_error(&message), Some(0x000d));
     }
 
     #[test]

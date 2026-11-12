@@ -26,6 +26,9 @@
 //! uu-linux-kernel-wlan = { path = "...", features = ["tracing"] }
 //! ```
 //!
+//! Уровень задаётся только через `RUST_LOG`, например `RUST_LOG=debug` или
+//! `RUST_LOG=uu_linux_kernel_wlan=trace`.
+//!
 //! # Пример
 //!
 //! ```no_run

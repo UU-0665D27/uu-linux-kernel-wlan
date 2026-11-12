@@ -17,6 +17,9 @@ tracing = { version = "0.1", optional = true }
 uu-linux-kernel-netlink = { git = "https://github.com/UU-0665D27/uu-linux-kernel-netlink", branch = "main" }
 uu-wlan-wps-pin-gen = { git = "https://github.com/UU-0665D27/uu-wlan-wps-pin-gen", branch = "main" }
 
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 [lints.clippy]
 all = "deny"
 pedantic = "deny"

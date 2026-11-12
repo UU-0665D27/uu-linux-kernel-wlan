@@ -53,8 +53,17 @@ uu-linux-kernel-wlan = { git = "https://github.com/UU-0665D27/uu-linux-kernel-wl
 uu-linux-kernel-wlan = { path = "...", features = ["tracing"] }
 ```
 
+Уровень логов задаётся только переменной окружения `RUST_LOG`; отдельной
+настройки нет:
+
+```text
+RUST_LOG=debug cargo run --features tracing --example wps_connect -- wlan0 LP aa:bb:cc:dd:ee:ff 48293563
+RUST_LOG=uu_linux_kernel_wlan=trace cargo run --features tracing --example wlan_scan -- wlan0
+```
+
 Без фичи макросы логирования раскрываются в пустоту, а их аргументы не
-вычисляются.
+вычисляются. Примеры сами поднимают подписчик (`tracing-subscriber`) и
+читают фильтр из `RUST_LOG`; если переменная не задана, логи выключены.
 
 ## Пример: сканирование и WPS PIN
 
