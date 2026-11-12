@@ -18,24 +18,15 @@ fn socklen(len: usize) -> libc::socklen_t {
     libc::socklen_t::try_from(len).unwrap_or(libc::socklen_t::MAX)
 }
 
+/// Ethertype всех кадров (`ETH_P_ALL`).
+const ETH_P_ALL_U16: u16 = 0x0003;
+
 fn io_error() -> Error {
     let error = std::io::Error::last_os_error();
     match error.raw_os_error() {
         Some(libc::EPERM | libc::EACCES) => Error::PermissionDenied,
         _ => Error::Io(error),
     }
-}
-
-fn packet_protocol() -> Result<i32> {
-    let protocol = u16::try_from(libc::ETH_P_ALL)
-        .map_err(|_| Error::OutOfRange(i64::from(libc::ETH_P_ALL)))?;
-    Ok(i32::from(protocol.to_be()))
-}
-
-fn packet_protocol_u16() -> Result<u16> {
-    let protocol = u16::try_from(libc::ETH_P_ALL)
-        .map_err(|_| Error::OutOfRange(i64::from(libc::ETH_P_ALL)))?;
-    Ok(protocol.to_be())
 }
 
 fn packaged_ifindex(name: &str) -> Result<i32> {
@@ -54,24 +45,38 @@ pub struct PacketSocket {
     fd: OwnedFd,
     ifindex: i32,
     ifname: String,
+    protocol: u16,
 }
 
 impl PacketSocket {
-    /// Открывает сокет на интерфейсе `ifname`.
+    /// Открывает сокет на интерфейсе `ifname` и принимает все кадры.
     ///
     /// # Errors
     ///
     /// Возвращает [`Error::InterfaceNotFound`] для неизвестного имени и
     /// [`Error::PermissionDenied`], если не хватает `CAP_NET_RAW`.
     pub fn open(ifname: &str) -> Result<Self> {
+        Self::open_ethertype(ifname, ETH_P_ALL_U16)
+    }
+
+    /// Открывает сокет, ограниченный одним ethertype (например, `0x888e`).
+    ///
+    /// Ядро отфильтрует остальные кадры, поэтому пользовательский код
+    /// разбирает только нужный протокол.
+    ///
+    /// # Errors
+    ///
+    /// Возвращает [`Error::InterfaceNotFound`] для неизвестного имени и
+    /// [`Error::PermissionDenied`], если не хватает `CAP_NET_RAW`.
+    pub fn open_ethertype(ifname: &str, ethertype: u16) -> Result<Self> {
         let ifindex = packaged_ifindex(ifname)?;
-        let protocol = packet_protocol()?;
+        let protocol = ethertype.to_be();
         // SAFETY: создаём сокет, дескриптор сразу переходит во владение OwnedFd.
         let raw_fd = unsafe {
             libc::socket(
                 libc::AF_PACKET,
                 libc::SOCK_RAW | libc::SOCK_CLOEXEC,
-                protocol,
+                i32::from(protocol),
             )
         };
         if raw_fd < 0 {
@@ -83,9 +88,10 @@ impl PacketSocket {
             fd,
             ifindex,
             ifname: ifname.to_string(),
+            protocol,
         };
         socket.bind()?;
-        trace!(ifname, ifindex, "packet socket ready");
+        trace!(ifname, ifindex, protocol = ethertype, "packet socket ready");
         Ok(socket)
     }
 
@@ -93,7 +99,7 @@ impl PacketSocket {
         let mut address: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
         address.sll_family = u16::try_from(libc::AF_PACKET)
             .map_err(|_| Error::OutOfRange(i64::from(libc::AF_PACKET)))?;
-        address.sll_protocol = packet_protocol_u16()?;
+        address.sll_protocol = self.protocol;
         address.sll_ifindex = self.ifindex;
         // SAFETY: address инициализирован, длина соответствует типу.
         let rc = unsafe {
@@ -136,7 +142,7 @@ impl PacketSocket {
         let mut address: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
         address.sll_family = u16::try_from(libc::AF_PACKET)
             .map_err(|_| Error::OutOfRange(i64::from(libc::AF_PACKET)))?;
-        address.sll_protocol = packet_protocol_u16()?;
+        address.sll_protocol = self.protocol;
         address.sll_ifindex = self.ifindex;
 
         trace!(ifname = %self.ifname, len = data.len(), "packet send");

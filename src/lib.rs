@@ -5,7 +5,7 @@
 //! * [`raw`] — MAC-адреса, radiotap, кадры 802.11, информационные элементы,
 //!   `EAPOL`/WPS и `AF_PACKET`-сокет;
 //! * [`high`] — команды WLAN: режим интерфейса, канал, сканирование,
-//!   подключение к открытой сети и генерация WPS PIN.
+//!   подключение к открытой сети, WPS PIN и генерация PIN.
 //!
 //! Высокоуровневый слой переиспользует [`raw`] для инъекции и
 //! `uu-linux-kernel-netlink` для `nl80211`.
@@ -53,11 +53,12 @@ compile_error!("uu-linux-kernel-wlan supports Linux only");
 #[macro_use]
 mod telemetry;
 
+mod crypto;
 mod error;
 
 pub mod high;
 pub mod raw;
 
 pub use crate::error::{Error, Result};
-pub use crate::high::{Bss, Wlan, WpsIe};
+pub use crate::high::{Bss, Wlan, WpsCredentials, WpsIe};
 pub use crate::raw::{MacAddr, PacketSocket, Radiotap};

@@ -30,13 +30,39 @@ pub const EAP_SUCCESS: u8 = 3;
 /// `EAP`-код `Failure`.
 pub const EAP_FAILURE: u8 = 4;
 
+/// `EAP`-тип `Identity`.
+pub const EAP_TYPE_IDENTITY: u8 = 1;
 /// `EAP`-тип `Expanded`.
 pub const EAP_TYPE_EXPANDED: u8 = 254;
+
+/// Identity enrollee для EAP-WSC.
+pub const WPS_IDENTITY_ENROLLEE: &[u8] = b"WFA-SimpleConfig-Enrollee-1-0";
 
 /// `OUI` WPS (`00:37:2a`).
 pub const WPS_VENDOR_ID: [u8; 3] = [0x00, 0x37, 0x2a];
 /// Vendor type WPS в `EAP-Expanded`.
 pub const WPS_VENDOR_TYPE: u32 = 0x0000_0001;
+
+/// `WSC` op-code `Start`.
+pub const WSC_OP_START: u8 = 0x01;
+/// `WSC` op-code `ACK`.
+pub const WSC_OP_ACK: u8 = 0x02;
+/// `WSC` op-code `NACK`.
+pub const WSC_OP_NACK: u8 = 0x03;
+/// `WSC` op-code `MSG`.
+pub const WSC_OP_MSG: u8 = 0x04;
+/// `WSC` op-code `Done`.
+pub const WSC_OP_DONE: u8 = 0x05;
+/// `WSC` op-code `Fragment ACK`.
+pub const WSC_OP_FRAG_ACK: u8 = 0x06;
+
+/// Флаг «есть продолжение» (`More Fragments`).
+pub const WSC_FLAG_MF: u8 = 0x01;
+/// Флаг «первый фрагмент, есть длина» (`Length Field`).
+pub const WSC_FLAG_LF: u8 = 0x02;
+
+/// Рекомендуемый размер фрагмента EAP-WSC.
+pub const WSC_FRAGMENT_SIZE: usize = 1400;
 
 // ─── WPS-атрибуты ────────────────────────────────────────────────────────────
 
@@ -44,24 +70,72 @@ pub const WPS_VENDOR_TYPE: u32 = 0x0000_0001;
 pub const WPS_ATTR_VERSION: u16 = 0x104a;
 /// `WPS` `Message Type`.
 pub const WPS_ATTR_MESSAGE_TYPE: u16 = 0x1022;
+/// `WPS` `Association State`.
+pub const WPS_ATTR_ASSOC_STATE: u16 = 0x1002;
+/// `WPS` `Authenticator`.
+pub const WPS_ATTR_AUTHENTICATOR: u16 = 0x1005;
 /// `WPS` `Enrollee Nonce`.
 pub const WPS_ATTR_ENROLLEE_NONCE: u16 = 0x101a;
 /// `WPS` `Registrar Nonce`.
-pub const WPS_ATTR_REGISTRAR_NONCE: u16 = 0x1019;
+pub const WPS_ATTR_REGISTRAR_NONCE: u16 = 0x1039;
 /// `WPS` `UUID-E`.
 pub const WPS_ATTR_UUID_E: u16 = 0x1047;
 /// `WPS` `UUID-R`.
 pub const WPS_ATTR_UUID_R: u16 = 0x1048;
 /// `WPS` `Public Key`.
-pub const WPS_ATTR_PUBLIC_KEY: u16 = 0x1039;
+pub const WPS_ATTR_PUBLIC_KEY: u16 = 0x1032;
 /// `WPS` `Authentication Type Flags`.
 pub const WPS_ATTR_AUTH_TYPE_FLAGS: u16 = 0x1004;
+/// `WPS` `Authentication Type`.
+pub const WPS_ATTR_AUTH_TYPE: u16 = 0x1003;
 /// `WPS` `Encryption Type Flags`.
 pub const WPS_ATTR_ENCRYPTION_TYPE_FLAGS: u16 = 0x1010;
+/// `WPS` `Encryption Type`.
+pub const WPS_ATTR_ENCRYPTION_TYPE: u16 = 0x100f;
 /// `WPS` `Connection Type Flags`.
 pub const WPS_ATTR_CONNECTION_TYPE_FLAGS: u16 = 0x100c;
 /// `WPS` `Configuration Methods`.
 pub const WPS_ATTR_CONFIG_METHODS: u16 = 0x1008;
+/// `WPS` `Configuration Error`.
+pub const WPS_ATTR_CONFIG_ERROR: u16 = 0x1009;
+/// `WPS` `Credential`.
+pub const WPS_ATTR_CREDENTIAL: u16 = 0x100e;
+/// `WPS` `E-Hash1`.
+pub const WPS_ATTR_E_HASH1: u16 = 0x1014;
+/// `WPS` `E-Hash2`.
+pub const WPS_ATTR_E_HASH2: u16 = 0x1015;
+/// `WPS` `E-SNonce1`.
+pub const WPS_ATTR_E_SNONCE1: u16 = 0x1016;
+/// `WPS` `E-SNonce2`.
+pub const WPS_ATTR_E_SNONCE2: u16 = 0x1017;
+/// `WPS` `Encrypted Settings`.
+pub const WPS_ATTR_ENCRYPTED_SETTINGS: u16 = 0x1018;
+/// `WPS` `Key Wrap Authenticator`.
+pub const WPS_ATTR_KEY_WRAP_AUTH: u16 = 0x101e;
+/// `WPS` `MAC Address`.
+pub const WPS_ATTR_MAC_ADDR: u16 = 0x1020;
+/// `WPS` `Network Index`.
+pub const WPS_ATTR_NETWORK_INDEX: u16 = 0x1026;
+/// `WPS` `Network Key`.
+pub const WPS_ATTR_NETWORK_KEY: u16 = 0x1027;
+/// `WPS` `Network Key Index`.
+pub const WPS_ATTR_NETWORK_KEY_INDEX: u16 = 0x1028;
+/// `WPS` `Primary Device Type`.
+pub const WPS_ATTR_PRIMARY_DEVICE_TYPE: u16 = 0x1054;
+/// `WPS` `R-Hash1`.
+pub const WPS_ATTR_R_HASH1: u16 = 0x103d;
+/// `WPS` `R-Hash2`.
+pub const WPS_ATTR_R_HASH2: u16 = 0x103e;
+/// `WPS` `R-SNonce1`.
+pub const WPS_ATTR_R_SNONCE1: u16 = 0x103f;
+/// `WPS` `R-SNonce2`.
+pub const WPS_ATTR_R_SNONCE2: u16 = 0x1040;
+/// `WPS` `SSID`.
+pub const WPS_ATTR_SSID: u16 = 0x1045;
+/// `WPS` `Request Type`.
+pub const WPS_ATTR_REQUEST_TYPE: u16 = 0x103a;
+/// `WPS` `Vendor Extension`.
+pub const WPS_ATTR_VENDOR_EXTENSION: u16 = 0x1049;
 /// `WPS` `WPS State`.
 pub const WPS_ATTR_STATE: u16 = 0x1044;
 /// `WPS` `AP Setup Locked`.
@@ -91,6 +165,8 @@ pub const WPS_ATTR_OS_VERSION: u16 = 0x102d;
 pub const WPS_MSG_M1: u8 = 0x04;
 /// Значение `WPS_ATTR_MESSAGE_TYPE`: `M2`.
 pub const WPS_MSG_M2: u8 = 0x05;
+/// Значение `WPS_ATTR_MESSAGE_TYPE`: `M2D` (registrar не продолжает обмен).
+pub const WPS_MSG_M2D: u8 = 0x06;
 /// Значение `WPS_ATTR_MESSAGE_TYPE`: `M3`.
 pub const WPS_MSG_M3: u8 = 0x07;
 /// Значение `WPS_ATTR_MESSAGE_TYPE`: `M4`.
@@ -116,6 +192,44 @@ pub const WPS_MSG_DONE: u8 = 0x0f;
 pub const WPS_DEVICE_PASSWORD_ID_PIN: u16 = 0x0000;
 /// `WPS` `Device Password ID`: push button.
 pub const WPS_DEVICE_PASSWORD_ID_PUSH_BUTTON: u16 = 0x0004;
+
+/// `WPS` `Authentication Type Flags`: open.
+pub const WPS_AUTH_OPEN: u16 = 0x0001;
+/// `WPS` `Authentication Type Flags`: WPA-PSK.
+pub const WPS_AUTH_WPAPSK: u16 = 0x0002;
+/// `WPS` `Authentication Type Flags`: WPA2-PSK.
+pub const WPS_AUTH_WPA2PSK: u16 = 0x0020;
+
+/// `WPS` `Encryption Type Flags`: none.
+pub const WPS_ENCR_NONE: u16 = 0x0001;
+/// `WPS` `Encryption Type Flags`: TKIP.
+pub const WPS_ENCR_TKIP: u16 = 0x0004;
+/// `WPS` `Encryption Type Flags`: AES.
+pub const WPS_ENCR_AES: u16 = 0x0008;
+
+/// `WPS` `Connection Type Flags`: ESS.
+pub const WPS_CONN_ESS: u8 = 0x01;
+/// `WPS` `Configuration Methods`: keypad.
+pub const WPS_CONFIG_KEYPAD: u16 = 0x0100;
+/// `WPS` `Configuration Methods`: label.
+pub const WPS_CONFIG_LABEL: u16 = 0x0004;
+/// `WPS` `WPS State`: not configured.
+pub const WPS_STATE_NOT_CONFIGURED: u8 = 1;
+/// `WPS` `Association State`: not associated.
+pub const WPS_ASSOC_NOT_ASSOC: u16 = 0;
+/// `WPS` `Configuration Error`: no error.
+pub const WPS_CFG_NO_ERROR: u16 = 0;
+/// `WPS` `Request Type`: enrollee.
+pub const WPS_REQUEST_TYPE_ENROLLEE: u8 = 0x00;
+/// Версия WPS 1.0 (значение атрибута `Version`).
+pub const WPS_VERSION_1_0: u8 = 0x10;
+/// Версия `EAPOL` в кадрах `EAPOL-Start`.
+pub const EAPOL_VERSION: u8 = 2;
+
+/// `EAPOL`-адрес группы `PAE`.
+pub const PAE_GROUP_ADDR: [u8; 6] = [0x01, 0x80, 0xc2, 0x00, 0x00, 0x03];
+/// Ethertype `EAPOL`.
+pub const ETHERTYPE_EAPOL: u16 = 0x888e;
 
 /// Заголовок `EAPOL` и его тело.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,6 +367,56 @@ pub fn eap_expanded(
 /// См. [`eap_expanded`].
 pub fn wps_eap(code: u8, id: u8, tlvs: &[u8]) -> Result<Vec<u8>> {
     eap_expanded(code, id, WPS_VENDOR_ID, WPS_VENDOR_TYPE, tlvs)
+}
+
+/// `EAP`-пакет (код, идентификатор, тип и данные).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Eap<'a> {
+    /// Код `EAP` (`EAP_REQUEST`, `EAP_RESPONSE`, ...).
+    pub code: u8,
+    /// Идентификатор запроса.
+    pub id: u8,
+    /// Тип `EAP` (`EAP_TYPE_IDENTITY`, `EAP_TYPE_EXPANDED`, ...).
+    pub packet_type: u8,
+    /// Данные после заголовка типа.
+    pub data: &'a [u8],
+}
+
+impl<'a> Eap<'a> {
+    /// Разбирает `EAP`-пакет из тела `EAPOL_TYPE_EAP`.
+    #[must_use]
+    pub fn parse(data: &'a [u8]) -> Option<Self> {
+        let code = *data.first()?;
+        let id = *data.get(1)?;
+        let length = usize::from(u16::from_be_bytes(data.get(2..4)?.try_into().ok()?));
+        let packet = data.get(..length)?;
+        let packet_type = *packet.get(4)?;
+        let data = packet.get(5..)?;
+        Some(Self {
+            code,
+            id,
+            packet_type,
+            data,
+        })
+    }
+}
+
+/// Собирает `EAP-Response/Identity`.
+///
+/// # Errors
+///
+/// Возвращает [`Error::OutOfRange`], если пакет не помещается в `u16`.
+pub fn eap_identity(code: u8, id: u8, identity: &[u8]) -> Result<Vec<u8>> {
+    let total = 5usize.checked_add(identity.len()).ok_or(Error::Malformed)?;
+    let len = u16::try_from(total)
+        .map_err(|_| Error::OutOfRange(i64::try_from(total).unwrap_or(i64::MAX)))?;
+    let mut out = Vec::with_capacity(total);
+    out.push(code);
+    out.push(id);
+    out.extend_from_slice(&len.to_be_bytes());
+    out.push(EAP_TYPE_IDENTITY);
+    out.extend_from_slice(identity);
+    Ok(out)
 }
 
 /// Один WPS-атрибут.

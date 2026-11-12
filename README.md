@@ -90,6 +90,28 @@ fn main() -> Result<(), Error> {
 }
 ```
 
+## Пример: подключение по WPS PIN
+
+```rust
+use uu_linux_kernel_wlan::{Error, MacAddr, Wlan};
+
+fn main() -> Result<(), Error> {
+    let mut wlan = Wlan::open("wlan0")?;
+    let bssid: MacAddr = "aa:bb:cc:dd:ee:ff".parse()?;
+
+    let credentials = wlan.wps_pin_psk(b"LP", bssid, "48293563")?;
+    println!("SSID: {}", String::from_utf8_lossy(&credentials.ssid));
+    println!("PSK:  {}", credentials.psk());
+    Ok(())
+}
+```
+
+Интерфейс переключается в managed-режим, подключается к `BSSID` с
+WPS-элементом `Request Type = Enrollee` и проходит обмен `M1`–`M8` через
+EAP-WSC (`EAP-Expanded`, vendor `00:37:2a`). Из `M8` извлекаются `SSID`,
+`Network Key` и типы безопасности; сохранение конфигурации остаётся
+вызывающему коду.
+
 ## Пример: инъекция
 
 ```rust
@@ -125,6 +147,7 @@ fn main() -> Result<(), Error> {
 
 ```bash
 cargo run --example wlan_scan -- wlan0
+cargo run --example wps_connect -- wlan0 LP aa:bb:cc:dd:ee:ff 48293563
 cargo run --example raw_deauth -- wlan0 aa:bb:cc:dd:ee:ff 6
 cargo run --example raw_sniff -- wlan0
 ```
@@ -147,12 +170,13 @@ cargo run --example raw_sniff -- wlan0
 - `set_monitor`/`set_managed`, `set_channel`, `set_frequency`;
 - `scan`/`scan_with`/`scan_each`/`scan_each_with`;
 - `connect_open`/`disconnect` (только открытые сети);
+- `wps_pin_psk` — подключение по WPS PIN и извлечение PSK;
 - `WpsIe` — разбор WPS-элемента beacon;
 - `Bss::wps_pins`/`wps_app_pins` — PIN по `BSSID`.
 
 WPA2/WPA3 4-way handshake в крейт не входит: для защищённых сетей нужен
-userspace-supplicant. WPS state machine (`M1`–`M8`) — следующий этап;
-низкоуровневые EAPOL/WPS-пакеты для него уже готовы.
+userspace-supplicant. WPS state machine (`M1`–`M8`) реализована в
+`high::wps_enrollee` и проверяется unit-тестом с офлайн-регистратором.
 
 ## Лицензия
 

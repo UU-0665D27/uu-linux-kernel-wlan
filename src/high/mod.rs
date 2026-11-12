@@ -7,9 +7,13 @@ mod nl80211_ext;
 
 pub mod scan;
 pub mod wps;
+pub mod wps_connect;
+pub mod wps_enrollee;
 
 pub use scan::{Bss, DEFAULT_SCAN_WAIT, frequency_to_channel};
 pub use wps::{WpsIe, app_pin_candidates, pin_candidates};
+pub use wps_connect::{DEFAULT_ASSOC_TIMEOUT, DEFAULT_WPS_TIMEOUT};
+pub use wps_enrollee::{WpsCredentials, WpsEnrollee};
 
 use uu_linux_kernel_netlink::{AttrWriter, IfType, Nl80211, WifiInterface};
 

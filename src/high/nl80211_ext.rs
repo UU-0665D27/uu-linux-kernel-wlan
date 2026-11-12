@@ -14,6 +14,12 @@ pub const CMD_DISCONNECT: u8 = 48;
 
 /// `NL80211_ATTR_IFINDEX`.
 pub const ATTR_IFINDEX: u16 = 3;
+/// `NL80211_ATTR_MAC`.
+pub const ATTR_MAC: u16 = 6;
+/// `NL80211_ATTR_WIPHY_FREQ`.
+pub const ATTR_WIPHY_FREQ: u16 = 38;
+/// `NL80211_ATTR_IE`.
+pub const ATTR_IE: u16 = 42;
 /// `NL80211_ATTR_SSID`.
 pub const ATTR_SSID: u16 = 52;
 /// `NL80211_ATTR_SCAN_FREQUENCIES`.

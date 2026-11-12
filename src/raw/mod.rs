@@ -11,7 +11,8 @@ pub mod radiotap;
 pub mod socket;
 
 pub use eapol::{
-    EapExpanded, Eapol, WpsTlv, WpsTlvIter, WpsTlvWriter, eap_expanded, eapol, find_tlv, wps_eap,
+    Eap, EapExpanded, Eapol, WpsTlv, WpsTlvIter, WpsTlvWriter, eap_expanded, eap_identity, eapol,
+    find_tlv, wps_eap,
 };
 pub use frame::{
     FrameControl, MgmtHeader, auth_open, beacon, data_frame, deauthenticate, disassociate,
