@@ -23,9 +23,26 @@ uu-linux-kernel-wlan = { git = "https://github.com/UU-0665D27/uu-linux-kernel-wl
 
 ## Требования
 
-- Linux;
-- `root` или `CAP_NET_RAW`/`CAP_NET_ADMIN`;
+- Linux или Android (`target_os = "android"`);
+- `root` или `CAP_NET_RAW`/`CAP_NET_ADMIN`
+  (на Android — `su`/`CAP_NET_ADMIN`, обычному приложению `AF_PACKET` и
+  `nl80211` недоступны);
 - драйвер с поддержкой monitor-режима для инъекции.
+
+## Сборка под Android
+
+Крейт собирается `cargo-ndk` под любой ABI, например `arm64-v8a` для
+Android 13 (API 33):
+
+```bash
+export ANDROID_HOME=$HOME/Android/Sdk
+cargo ndk -t arm64-v8a -P 33 build --release --examples --features tracing
+```
+
+Бинарники появятся в `target/aarch64-linux-android/release/examples/`.
+`file` должен показать `ELF 64-bit LSB pie executable, ARM aarch64 ... for
+Android 33`, а `readelf -d` — только `libc.so`/`libdl.so` (никаких
+`libssl`, `libnl` и прочих внешних зависимостей нет).
 
 ## Память
 
@@ -156,10 +173,14 @@ fn main() -> Result<(), Error> {
 
 ```bash
 cargo run --example wlan_scan -- wlan0
+cargo run --example wps_pin_connect -- wlan0 LP aa:bb:cc:dd:ee:ff
 cargo run --example wps_connect -- wlan0 LP aa:bb:cc:dd:ee:ff 48293563
 cargo run --example raw_deauth -- wlan0 aa:bb:cc:dd:ee:ff 6
 cargo run --example raw_sniff -- wlan0
 ```
+
+`wps_pin_connect` без PIN строит кандидатов по `BSSID` (`Bss::wps_pins`) и
+пробует их по порядку; если PIN передан, используется только он.
 
 ## Cлой `raw`
 
