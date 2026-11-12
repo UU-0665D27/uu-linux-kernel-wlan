@@ -49,9 +49,8 @@
 //! ```
 //!
 //! Требуются `root` или `CAP_NET_RAW`/`CAP_NET_ADMIN`.
-
-#[cfg(not(target_os = "linux"))]
-compile_error!("uu-linux-kernel-wlan supports Linux only");
+//!
+//! Собирается под Linux и Android (см. `cargo ndk`).
 
 #[macro_use]
 mod telemetry;

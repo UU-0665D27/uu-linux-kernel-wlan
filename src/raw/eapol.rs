@@ -92,8 +92,10 @@ pub const WPS_ATTR_AUTH_TYPE: u16 = 0x1003;
 pub const WPS_ATTR_ENCRYPTION_TYPE_FLAGS: u16 = 0x1010;
 /// `WPS` `Encryption Type`.
 pub const WPS_ATTR_ENCRYPTION_TYPE: u16 = 0x100f;
+/// `WPS` `Connection Type`.
+pub const WPS_ATTR_CONNECTION_TYPE: u16 = 0x100c;
 /// `WPS` `Connection Type Flags`.
-pub const WPS_ATTR_CONNECTION_TYPE_FLAGS: u16 = 0x100c;
+pub const WPS_ATTR_CONNECTION_TYPE_FLAGS: u16 = 0x100d;
 /// `WPS` `Configuration Methods`.
 pub const WPS_ATTR_CONFIG_METHODS: u16 = 0x1008;
 /// `WPS` `Configuration Error`.
@@ -182,11 +184,23 @@ pub const WPS_MSG_M8: u8 = 0x0c;
 /// Значение `WPS_ATTR_MESSAGE_TYPE`: `WSC_Start`.
 pub const WPS_MSG_START: u8 = 0x01;
 /// Значение `WPS_ATTR_MESSAGE_TYPE`: `WSC_Ack`.
-pub const WPS_MSG_ACK: u8 = 0x02;
+pub const WPS_MSG_ACK: u8 = 0x0d;
 /// Значение `WPS_ATTR_MESSAGE_TYPE`: `WSC_NACK`.
-pub const WPS_MSG_NACK: u8 = 0x03;
+pub const WPS_MSG_NACK: u8 = 0x0e;
 /// Значение `WPS_ATTR_MESSAGE_TYPE`: `WSC_Done`.
 pub const WPS_MSG_DONE: u8 = 0x0f;
+
+/// `WPS` `RF Bands`: 2.4 GHz.
+pub const WPS_RF_BAND_24GHZ: u8 = 0x01;
+/// `WPS` `RF Bands`: 5 GHz.
+pub const WPS_RF_BAND_5GHZ: u8 = 0x02;
+
+/// `WFA` vendor extension для `M1`: `Version2 = 2.0`.
+///
+/// Формат: `OUI 00:37:2a` + подэлемент `0x00` (Version2), длина `1`,
+/// значение `0x20` (WSC 2.0). Без него регистраторы с WSC 2.0 считают
+/// enrollee устройством 1.0.
+pub const WPS_WFA_EXTENSION_VERSION2_2_0: [u8; 6] = [0x00, 0x37, 0x2a, 0x00, 0x01, 0x20];
 
 /// `WPS` `Device Password ID`: PIN.
 pub const WPS_DEVICE_PASSWORD_ID_PIN: u16 = 0x0000;

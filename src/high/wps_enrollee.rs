@@ -27,11 +27,12 @@ use crate::raw::eapol::{
     WPS_ATTR_MAC_ADDR, WPS_ATTR_MANUFACTURER, WPS_ATTR_MESSAGE_TYPE, WPS_ATTR_MODEL_NAME,
     WPS_ATTR_MODEL_NUMBER, WPS_ATTR_NETWORK_KEY, WPS_ATTR_OS_VERSION, WPS_ATTR_PRIMARY_DEVICE_TYPE,
     WPS_ATTR_PUBLIC_KEY, WPS_ATTR_R_HASH1, WPS_ATTR_R_HASH2, WPS_ATTR_R_SNONCE1,
-    WPS_ATTR_R_SNONCE2, WPS_ATTR_REGISTRAR_NONCE, WPS_ATTR_RF_BANDS, WPS_ATTR_SSID, WPS_ATTR_STATE,
-    WPS_ATTR_UUID_E, WPS_ATTR_VERSION, WPS_AUTH_WPA2PSK, WPS_AUTH_WPAPSK, WPS_CFG_NO_ERROR,
-    WPS_CONFIG_KEYPAD, WPS_CONFIG_LABEL, WPS_CONN_ESS, WPS_DEVICE_PASSWORD_ID_PIN, WPS_ENCR_AES,
-    WPS_ENCR_TKIP, WPS_MSG_DONE, WPS_MSG_M1, WPS_MSG_M3, WPS_MSG_M5, WPS_MSG_M7,
-    WPS_STATE_NOT_CONFIGURED, WPS_VERSION_1_0, WpsTlvWriter,
+    WPS_ATTR_R_SNONCE2, WPS_ATTR_REGISTRAR_NONCE, WPS_ATTR_RF_BANDS, WPS_ATTR_SERIAL_NUMBER,
+    WPS_ATTR_SSID, WPS_ATTR_STATE, WPS_ATTR_UUID_E, WPS_ATTR_VENDOR_EXTENSION, WPS_ATTR_VERSION,
+    WPS_AUTH_OPEN, WPS_AUTH_WPA2PSK, WPS_AUTH_WPAPSK, WPS_CFG_NO_ERROR, WPS_CONFIG_KEYPAD,
+    WPS_CONFIG_LABEL, WPS_CONN_ESS, WPS_DEVICE_PASSWORD_ID_PIN, WPS_ENCR_AES, WPS_ENCR_NONE,
+    WPS_ENCR_TKIP, WPS_MSG_ACK, WPS_MSG_DONE, WPS_MSG_M1, WPS_MSG_M3, WPS_MSG_M5, WPS_MSG_M7,
+    WPS_STATE_NOT_CONFIGURED, WPS_VERSION_1_0, WPS_WFA_EXTENSION_VERSION2_2_0, WpsTlvWriter,
 };
 use crate::raw::mac::MacAddr;
 use crate::{Error, Result};
@@ -186,11 +187,14 @@ impl WpsEnrollee {
 
     /// Собирает `M1`.
     ///
+    /// `rf_band` — поддерживаемые диапазоны (`WPS_RF_BAND_*`): регистратор
+    /// выбирает по ним конфигурацию сети.
+    ///
     /// # Errors
     ///
     /// Возвращает [`Error::OutOfRange`] при переполнении TLV (невозможно для
     /// фиксированного набора атрибутов).
-    pub fn m1(&mut self) -> Result<Vec<u8>> {
+    pub fn m1(&mut self, rf_band: u8) -> Result<Vec<u8>> {
         let mut writer = WpsTlvWriter::new();
         writer.u8(WPS_ATTR_VERSION, WPS_VERSION_1_0)?;
         writer.u8(WPS_ATTR_MESSAGE_TYPE, WPS_MSG_M1)?;
@@ -198,8 +202,14 @@ impl WpsEnrollee {
         writer.push(WPS_ATTR_MAC_ADDR, &self.mac.octets())?;
         writer.push(WPS_ATTR_ENROLLEE_NONCE, &self.nonce_e)?;
         writer.push(WPS_ATTR_PUBLIC_KEY, &self.public_key_e)?;
-        writer.u16(WPS_ATTR_AUTH_TYPE_FLAGS, WPS_AUTH_WPAPSK | WPS_AUTH_WPA2PSK)?;
-        writer.u16(WPS_ATTR_ENCRYPTION_TYPE_FLAGS, WPS_ENCR_AES | WPS_ENCR_TKIP)?;
+        writer.u16(
+            WPS_ATTR_AUTH_TYPE_FLAGS,
+            WPS_AUTH_OPEN | WPS_AUTH_WPAPSK | WPS_AUTH_WPA2PSK,
+        )?;
+        writer.u16(
+            WPS_ATTR_ENCRYPTION_TYPE_FLAGS,
+            WPS_ENCR_NONE | WPS_ENCR_TKIP | WPS_ENCR_AES,
+        )?;
         writer.u8(WPS_ATTR_CONNECTION_TYPE_FLAGS, WPS_CONN_ESS)?;
         writer.u16(
             WPS_ATTR_CONFIG_METHODS,
@@ -209,18 +219,25 @@ impl WpsEnrollee {
         writer.push(WPS_ATTR_MANUFACTURER, b"uu")?;
         writer.push(WPS_ATTR_MODEL_NAME, b"uu-linux-kernel-wlan")?;
         writer.push(WPS_ATTR_MODEL_NUMBER, b"1")?;
-        writer.push(WPS_ATTR_DEVICE_NAME, b"uu-wlan")?;
+        writer.push(WPS_ATTR_SERIAL_NUMBER, b"1")?;
         writer.push(
             WPS_ATTR_PRIMARY_DEVICE_TYPE,
             &[0x00, 0x01, 0x00, 0x50, 0xf2, 0x04, 0x00, 0x01],
         )?;
-        writer.u8(WPS_ATTR_RF_BANDS, 0x03)?;
+        writer.push(WPS_ATTR_DEVICE_NAME, b"uu-wlan")?;
+        writer.u8(WPS_ATTR_RF_BANDS, rf_band)?;
         writer.u16(WPS_ATTR_ASSOC_STATE, WPS_ASSOC_NOT_ASSOC)?;
         writer.u16(WPS_ATTR_DEVICE_PASSWORD_ID, WPS_DEVICE_PASSWORD_ID_PIN)?;
         writer.u16(WPS_ATTR_CONFIG_ERROR, WPS_CFG_NO_ERROR)?;
         writer.u32(WPS_ATTR_OS_VERSION, 0x8000_0000)?;
+        writer.push(WPS_ATTR_VENDOR_EXTENSION, &WPS_WFA_EXTENSION_VERSION2_2_0)?;
 
         let message = writer.finish();
+        debug!(payload = ?message, "M1 payload");
+        #[cfg(feature = "tracing")]
+        for tlv in crate::raw::eapol::WpsTlvIter::new(&message) {
+            trace!(attr = tlv.kind, value = ?tlv.value, "M1 attribute");
+        }
         debug!(len = message.len(), "M1 built");
         self.last_message.clone_from(&message);
         self.state = State::WaitM2;
@@ -388,6 +405,22 @@ impl WpsEnrollee {
         writer.push(WPS_ATTR_ENROLLEE_NONCE, &self.nonce_e)?;
         writer.push(WPS_ATTR_REGISTRAR_NONCE, &self.nonce_r)?;
         debug!("WSC_Done built");
+        Ok(writer.finish())
+    }
+
+    /// Собирает `WSC_ACK` — ответ на `M2D`.
+    ///
+    /// # Errors
+    ///
+    /// Возвращает [`Error::OutOfRange`] при переполнении TLV (невозможно для
+    /// фиксированного набора атрибутов).
+    pub fn wsc_ack_message(&self) -> Result<Vec<u8>> {
+        let mut writer = WpsTlvWriter::new();
+        writer.u8(WPS_ATTR_VERSION, WPS_VERSION_1_0)?;
+        writer.u8(WPS_ATTR_MESSAGE_TYPE, WPS_MSG_ACK)?;
+        writer.push(WPS_ATTR_ENROLLEE_NONCE, &self.nonce_e)?;
+        writer.push(WPS_ATTR_REGISTRAR_NONCE, &self.nonce_r)?;
+        debug!("WSC_ACK built");
         Ok(writer.finish())
     }
 
@@ -674,8 +707,8 @@ mod tests {
         WPS_ATTR_SSID, WPS_ATTR_STATE, WPS_ATTR_UUID_R, WPS_ATTR_VERSION, WPS_AUTH_WPA2PSK,
         WPS_AUTH_WPAPSK, WPS_CFG_NO_ERROR, WPS_CONFIG_KEYPAD, WPS_CONN_ESS,
         WPS_DEVICE_PASSWORD_ID_PIN, WPS_ENCR_AES, WPS_ENCR_TKIP, WPS_MSG_DONE, WPS_MSG_M1,
-        WPS_MSG_M2, WPS_MSG_M4, WPS_MSG_M6, WPS_MSG_M8, WPS_STATE_NOT_CONFIGURED, WPS_VERSION_1_0,
-        WpsTlvWriter,
+        WPS_MSG_M2, WPS_MSG_M4, WPS_MSG_M6, WPS_MSG_M8, WPS_RF_BAND_24GHZ,
+        WPS_STATE_NOT_CONFIGURED, WPS_VERSION_1_0, WpsTlvWriter,
     };
     use crate::raw::mac::MacAddr;
 
@@ -925,7 +958,7 @@ mod tests {
     #[test]
     fn completes_full_pin_handshake() {
         let mut enrollee = WpsEnrollee::new(mac(), "48293563").unwrap();
-        let m1 = enrollee.m1().unwrap();
+        let m1 = enrollee.m1(WPS_RF_BAND_24GHZ).unwrap();
         let mut registrar = Registrar::new(&m1, "48293563", mac());
 
         let m2 = registrar.build_m2();
@@ -957,7 +990,7 @@ mod tests {
     #[test]
     fn builds_m1_with_required_attributes() {
         let mut enrollee = WpsEnrollee::new(mac(), "48293563").unwrap();
-        let m1 = enrollee.m1().unwrap();
+        let m1 = enrollee.m1(WPS_RF_BAND_24GHZ).unwrap();
         assert_eq!(message_type(&m1), Some(WPS_MSG_M1));
         assert_eq!(
             find_tlv_offset(&m1, WPS_ATTR_VERSION).map(|(_, value)| value),

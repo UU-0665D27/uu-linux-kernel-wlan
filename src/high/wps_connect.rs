@@ -13,11 +13,12 @@
 
 use std::time::{Duration, Instant};
 
-use uu_linux_kernel_netlink::{AttrWriter, IfType};
+use uu_linux_kernel_netlink::{AttrWriter, IfType, read_u16};
 
 use crate::high::nl80211_ext::{
-    ATTR_AUTH_TYPE, ATTR_IE, ATTR_IFINDEX, ATTR_MAC, ATTR_SSID, ATTR_WIPHY_FREQ,
-    AUTHTYPE_OPEN_SYSTEM, CMD_CONNECT,
+    ATTR_AUTH_TYPE, ATTR_IE, ATTR_IFINDEX, ATTR_MAC, ATTR_SSID, ATTR_STATUS_CODE, ATTR_TIMED_OUT,
+    ATTR_WIPHY_FREQ, AUTHTYPE_OPEN_SYSTEM, CMD_ASSOCIATE, CMD_AUTHENTICATE, CMD_DEAUTHENTICATE,
+    CMD_DISASSOCIATE,
 };
 use crate::high::scan::{Bss, DEFAULT_SCAN_WAIT};
 use crate::high::wps_enrollee::{WpsCredentials, WpsEnrollee, message_type};
@@ -26,9 +27,9 @@ use crate::raw::eapol::{
     EAP_FAILURE, EAP_REQUEST, EAP_RESPONSE, EAP_TYPE_EXPANDED, EAP_TYPE_IDENTITY, EAPOL_TYPE_EAP,
     EAPOL_TYPE_START, ETHERTYPE_EAPOL, PAE_GROUP_ADDR, WPS_ATTR_REQUEST_TYPE, WPS_ATTR_VERSION,
     WPS_IDENTITY_ENROLLEE, WPS_MSG_M2, WPS_MSG_M2D, WPS_MSG_M4, WPS_MSG_M6, WPS_MSG_M8,
-    WPS_REQUEST_TYPE_ENROLLEE, WPS_VENDOR_ID, WPS_VENDOR_TYPE, WPS_VERSION_1_0, WSC_FLAG_LF,
-    WSC_FLAG_MF, WSC_FRAGMENT_SIZE, WSC_OP_DONE, WSC_OP_FRAG_ACK, WSC_OP_MSG, WSC_OP_NACK,
-    WSC_OP_START, WpsTlvWriter, eap_identity, eapol, wps_eap,
+    WPS_REQUEST_TYPE_ENROLLEE, WPS_RF_BAND_5GHZ, WPS_RF_BAND_24GHZ, WPS_VENDOR_ID, WPS_VENDOR_TYPE,
+    WPS_VERSION_1_0, WSC_FLAG_LF, WSC_FLAG_MF, WSC_FRAGMENT_SIZE, WSC_OP_DONE, WSC_OP_FRAG_ACK,
+    WSC_OP_MSG, WSC_OP_NACK, WSC_OP_START, WpsTlvWriter, eap_identity, eapol, wps_eap,
 };
 use crate::raw::ie::IeList;
 use crate::raw::mac::MacAddr;
@@ -37,17 +38,16 @@ use crate::{Error, Result};
 
 /// Общий таймаут WPS-обмена по умолчанию.
 pub const DEFAULT_WPS_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Период повторной отправки `EAPOL-Start`, пока AP молчит.
+const EAPOL_START_RETRY: Duration = Duration::from_secs(5);
 /// Таймаут ожидания ассоциации с точкой доступа.
 pub const DEFAULT_ASSOC_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Таймаут одного чтения EAPOL-кадра.
 const EAP_RECV_TIMEOUT: Duration = Duration::from_secs(3);
-/// Интервал опроса статуса ассоциации.
-const ASSOC_POLL: Duration = Duration::from_millis(250);
-/// `NL80211_CMD_GET_STATION`.
-const CMD_GET_STATION: u8 = 17;
-/// `NL80211_BSS_STATUS_ASSOCIATED`.
-const BSS_STATUS_ASSOCIATED: u32 = 1;
+/// Таймаут одного чтения события `nl80211`.
+const MLME_POLL: Duration = Duration::from_millis(200);
 /// Верхняя граница длины WSC-сообщения (как в hostap).
 const WSC_MAX_MESSAGE: usize = 50_000;
 
@@ -105,10 +105,11 @@ impl Wlan {
 
         let target = self.scan_target(bssid)?;
         let frequency = target.as_ref().map(|bss| bss.frequency);
-        self.connect_wps(ssid, bssid, frequency)?;
-        self.wait_for_association(bssid, target.as_ref(), DEFAULT_ASSOC_TIMEOUT)?;
+        self.authenticate(ssid, bssid, frequency)?;
+        self.associate_wps(ssid, bssid, frequency)?;
 
-        let mut session = Session::new(&self.socket, local, bssid, enrollee);
+        let rf_band = rf_band_for(frequency);
+        let mut session = Session::new(&self.socket, local, bssid, enrollee, rf_band);
         let credentials = session.run(timeout)?;
         info!(
             ssid = %String::from_utf8_lossy(&credentials.ssid),
@@ -124,6 +125,8 @@ impl Wlan {
             self.nl.change_mode(&self.iface, IfType::Station, None)?;
             self.refresh()?;
         }
+        let group = self.nl.genl_mut().multicast_group("nl80211", "mlme")?;
+        self.nl.genl().socket().join_multicast(group)?;
         uu_linux_kernel_netlink::set_if_up(&self.iface.name, true)?;
         self.socket = PacketSocket::open_ethertype(&self.iface.name, ETHERTYPE_EAPOL)?;
         Ok(())
@@ -143,6 +146,10 @@ impl Wlan {
             frequency = found.as_ref().map(|bss| bss.frequency),
             channel = found.as_ref().and_then(Bss::channel),
             wps = found.as_ref().is_some_and(Bss::is_wps),
+            wps_selected_registrar =
+                ?found.as_ref().and_then(|bss| bss.wps.as_ref()).and_then(|ie| ie.selected_registrar),
+            wps_locked =
+                ?found.as_ref().and_then(|bss| bss.wps.as_ref()).and_then(|ie| ie.ap_setup_locked),
             signal_dbm = found.as_ref().and_then(|bss| bss.signal_dbm),
             "scan for the target BSSID finished"
         );
@@ -152,19 +159,16 @@ impl Wlan {
         Ok(found)
     }
 
-    /// Отправляет `NL80211_CMD_CONNECT` с WPS-элементом ассоциации.
-    fn connect_wps(&mut self, ssid: &[u8], bssid: MacAddr, frequency: Option<u32>) -> Result<()> {
-        let mut wps = WpsTlvWriter::new();
-        wps.u8(WPS_ATTR_VERSION, WPS_VERSION_1_0)?;
-        wps.u8(WPS_ATTR_REQUEST_TYPE, WPS_REQUEST_TYPE_ENROLLEE)?;
-        let mut ies = IeList::new();
-        ies.wps(wps.as_bytes())?;
-
+    /// Выполняет открытую аутентификацию на `bssid`.
+    ///
+    /// `NL80211_CMD_CONNECT` на этом ядре/iwiwifi не начинает аутентификацию
+    /// (cfg80211 сразу отдаёт `timed out`), поэтому, как и `wpa_supplicant`,
+    /// шаги SME выполняются явно.
+    fn authenticate(&mut self, ssid: &[u8], bssid: MacAddr, frequency: Option<u32>) -> Result<()> {
         let mut attrs = AttrWriter::new();
         attrs.u32(ATTR_IFINDEX, self.iface.index);
-        attrs.bytes(ATTR_SSID, ssid);
         attrs.bytes(ATTR_MAC, &bssid.octets());
-        attrs.bytes(ATTR_IE, ies.as_bytes());
+        attrs.bytes(ATTR_SSID, ssid);
         attrs.u32(ATTR_AUTH_TYPE, AUTHTYPE_OPEN_SYSTEM);
         if let Some(freq) = frequency {
             attrs.u32(ATTR_WIPHY_FREQ, freq);
@@ -174,106 +178,112 @@ impl Wlan {
             ifname = %self.iface.name,
             %bssid,
             ?frequency,
-            ie_len = ies.as_bytes().len(),
-            "requesting association with WPS IE"
+            "requesting open-system authentication"
         );
         let family = self.nl.family_id();
-        self.nl.genl_mut().execute(family, CMD_CONNECT, 0, &attrs)?;
-        trace!(len = ssid.len(), "connect command acknowledged");
-        Ok(())
+        self.nl
+            .genl_mut()
+            .execute(family, CMD_AUTHENTICATE, 0, &attrs)?;
+        self.wait_mlme(CMD_AUTHENTICATE, bssid, DEFAULT_ASSOC_TIMEOUT)
     }
 
-    /// Ждёт, пока интерфейс ассоциируется с `bssid`.
-    fn wait_for_association(
-        &mut self,
-        bssid: MacAddr,
-        target: Option<&Bss>,
-        timeout: Duration,
-    ) -> Result<()> {
-        #[cfg(feature = "tracing")]
-        let started = Instant::now();
-        let deadline = deadline_after(timeout)?;
-        debug!(%bssid, ?timeout, "waiting for association");
-        loop {
-            if let Some(station) = self.station_bssid() {
-                if station == bssid.octets() {
-                    info!(
-                        %bssid,
-                        elapsed_ms = started.elapsed().as_millis(),
-                        "associated with the target AP"
-                    );
-                    return Ok(());
-                }
-                let other = MacAddr::new(station);
-                error!(
-                    %bssid,
-                    %other,
-                    ifname = %self.iface.name,
-                    "associated with a different BSSID"
-                );
-                return Err(Error::Message(format!(
-                    "{} associated with {other} instead of {bssid}; stop \
-                     NetworkManager/wpa_supplicant/iwd so they do not override the connection",
-                    self.iface.name
-                )));
-            }
+    /// Отправляет запрос ассоциации с WPS-элементом `Enrollee`.
+    fn associate_wps(&mut self, ssid: &[u8], bssid: MacAddr, frequency: Option<u32>) -> Result<()> {
+        let mut wps = WpsTlvWriter::new();
+        wps.u8(WPS_ATTR_VERSION, WPS_VERSION_1_0)?;
+        wps.u8(WPS_ATTR_REQUEST_TYPE, WPS_REQUEST_TYPE_ENROLLEE)?;
+        let mut ies = IeList::new();
+        ies.wps(wps.as_bytes())?;
 
-            let mut associated = false;
-            if self
-                .scan_each(|bss| {
-                    if bss.bssid == bssid && bss.status == Some(BSS_STATUS_ASSOCIATED) {
-                        associated = true;
-                    }
-                })
-                .is_err()
-            {
-                trace!("scan results are not available yet");
-            }
-            if associated {
-                info!(%bssid, "association reported by scan results");
-                return Ok(());
-            }
-
-            if Instant::now() >= deadline {
-                let hint = target.map_or(", target BSS was not found in scan results", |_| "");
-                error!(%bssid, "association timed out");
-                return Err(Error::Message(format!(
-                    "timed out waiting for association with {bssid}{hint}; stop \
-                     NetworkManager/wpa_supplicant/iwd so they do not override the connection"
-                )));
-            }
-            trace!(
-                elapsed_ms = started.elapsed().as_millis(),
-                "still not associated"
-            );
-            std::thread::sleep(ASSOC_POLL);
-        }
-    }
-
-    /// Возвращает `BSSID` station-записи интерфейса, если она есть.
-    ///
-    /// В managed-режиме `NL80211_CMD_GET_STATION` отдаёт текущую точку
-    /// доступа, поэтому запись означает состоявшуюся ассоциацию.
-    fn station_bssid(&mut self) -> Option<[u8; 6]> {
-        let mut station = None;
         let mut attrs = AttrWriter::new();
         attrs.u32(ATTR_IFINDEX, self.iface.index);
-        let family = self.nl.family_id();
-        let result = self
-            .nl
-            .genl_mut()
-            .dump_each(family, CMD_GET_STATION, 0, &attrs, |message| {
-                for (kind, value) in message.attrs() {
-                    if kind == ATTR_MAC && station.is_none() {
-                        station = <[u8; 6]>::try_from(value).ok();
-                    }
-                }
-                Ok(())
-            });
-        if result.is_err() {
-            trace!("station dump failed");
+        attrs.bytes(ATTR_MAC, &bssid.octets());
+        attrs.bytes(ATTR_SSID, ssid);
+        attrs.bytes(ATTR_IE, ies.as_bytes());
+        if let Some(freq) = frequency {
+            attrs.u32(ATTR_WIPHY_FREQ, freq);
         }
-        station
+
+        debug!(
+            ifname = %self.iface.name,
+            %bssid,
+            ?frequency,
+            ie_len = ies.as_bytes().len(),
+            "requesting association with the WPS IE"
+        );
+        let family = self.nl.family_id();
+        self.nl
+            .genl_mut()
+            .execute(family, CMD_ASSOCIATE, 0, &attrs)?;
+        self.wait_mlme(CMD_ASSOCIATE, bssid, DEFAULT_ASSOC_TIMEOUT)
+    }
+
+    /// Ждёт событие `cmd` для `bssid` и проверяет код статуса.
+    fn wait_mlme(&mut self, cmd: u8, bssid: MacAddr, timeout: Duration) -> Result<()> {
+        debug!(%bssid, cmd, ?timeout, "waiting for an nl80211 event");
+        self.nl.genl().socket().set_recv_timeout(Some(MLME_POLL))?;
+        let result = self.wait_mlme_event(cmd, bssid, timeout);
+        self.nl.genl().socket().set_recv_timeout(None)?;
+        result
+    }
+
+    fn wait_mlme_event(&mut self, cmd: u8, bssid: MacAddr, timeout: Duration) -> Result<()> {
+        let deadline = deadline_after(timeout)?;
+        loop {
+            let Some(message) = self.nl.genl_mut().socket_mut().recv_event()? else {
+                if Instant::now() >= deadline {
+                    error!(%bssid, cmd, "nl80211 event timed out");
+                    return Err(Error::Message(format!(
+                        "timed out waiting for the nl80211 event of {bssid}"
+                    )));
+                }
+                continue;
+            };
+            let Some(header) = message.genl_header() else {
+                continue;
+            };
+            if header.cmd != cmd
+                && header.cmd != CMD_DEAUTHENTICATE
+                && header.cmd != CMD_DISASSOCIATE
+            {
+                continue;
+            }
+            let mut event_bssid = None;
+            let mut status = None;
+            let mut timed_out = false;
+            for (kind, value) in message.attrs() {
+                match kind {
+                    ATTR_MAC => event_bssid = <[u8; 6]>::try_from(value).ok(),
+                    ATTR_STATUS_CODE => status = read_u16(value),
+                    ATTR_TIMED_OUT => timed_out = true,
+                    _ => {}
+                }
+            }
+            if event_bssid.is_some_and(|event| event != bssid.octets()) {
+                continue;
+            }
+            if header.cmd != cmd {
+                error!(%bssid, cmd = header.cmd, "the AP dropped the connection");
+                return Err(Error::Message(format!("{bssid} dropped the connection")));
+            }
+            if timed_out {
+                error!(%bssid, "the AP did not answer");
+                return Err(Error::Message(format!("{bssid} did not answer")));
+            }
+            match status {
+                Some(0) => {
+                    info!(%bssid, cmd, "nl80211 event reports success");
+                    return Ok(());
+                }
+                Some(code) => {
+                    error!(%bssid, status = code, "the AP rejected the request");
+                    return Err(Error::Message(format!(
+                        "{bssid} rejected the request with status {code}"
+                    )));
+                }
+                None => return Ok(()),
+            }
+        }
     }
 }
 
@@ -284,15 +294,25 @@ fn deadline_after(timeout: Duration) -> Result<Instant> {
         .ok_or_else(|| Error::Message("timeout is too large".to_string()))
 }
 
+/// `RF Bands` для `M1` по частоте подключения.
+const fn rf_band_for(frequency: Option<u32>) -> u8 {
+    match frequency {
+        Some(freq) if freq >= 3000 => WPS_RF_BAND_5GHZ,
+        _ => WPS_RF_BAND_24GHZ,
+    }
+}
+
 /// Состояние одного EAP-WSC обмена.
 struct Session<'a> {
     socket: &'a PacketSocket,
     local: MacAddr,
     bssid: MacAddr,
     enrollee: WpsEnrollee,
+    rf_band: u8,
     in_buf: Vec<u8>,
     in_op: Option<u8>,
     outgoing: Option<Outgoing>,
+    contacted: bool,
 }
 
 impl<'a> Session<'a> {
@@ -301,15 +321,18 @@ impl<'a> Session<'a> {
         local: MacAddr,
         bssid: MacAddr,
         enrollee: WpsEnrollee,
+        rf_band: u8,
     ) -> Self {
         Self {
             socket,
             local,
             bssid,
             enrollee,
+            rf_band,
             in_buf: Vec::new(),
             in_op: None,
             outgoing: None,
+            contacted: false,
         }
     }
 
@@ -319,10 +342,16 @@ impl<'a> Session<'a> {
         let deadline = deadline_after(timeout)?;
         info!(?timeout, "starting EAP-WSC exchange");
         self.send_eapol_start()?;
+        let mut retry_at = deadline_after(EAPOL_START_RETRY)?;
         loop {
             if Instant::now() >= deadline {
                 error!("EAP-WSC exchange timed out");
                 return Err(Error::Message("WPS exchange timed out".to_string()));
+            }
+            if !self.contacted && Instant::now() >= retry_at {
+                debug!("the AP did not answer EAPOL-Start; retrying");
+                self.send_eapol_start()?;
+                retry_at = deadline_after(EAPOL_START_RETRY)?;
             }
             let frame = match self.socket.recv() {
                 Ok(frame) => frame,
@@ -368,6 +397,7 @@ impl<'a> Session<'a> {
             );
             return Ok(None);
         }
+        self.contacted = true;
         match eapol.body.first().copied() {
             Some(EAP_REQUEST) => self.handle_request(eapol.body),
             Some(EAP_FAILURE) => {
@@ -493,12 +523,21 @@ impl<'a> Session<'a> {
         match op_code {
             WSC_OP_START => {
                 debug!("registrar started WSC; sending M1");
-                let m1 = self.enrollee.m1()?;
+                let m1 = self.enrollee.m1(self.rf_band)?;
                 self.send_wsc(id, WSC_OP_MSG, &m1)?;
                 Ok(None)
             }
             WSC_OP_MSG => self.handle_message(id, message),
             WSC_OP_NACK => {
+                debug!(payload = ?message, "WSC NACK payload");
+                #[cfg(feature = "tracing")]
+                for tlv in crate::raw::eapol::WpsTlvIter::new(message) {
+                    debug!(
+                        attr = tlv.kind,
+                        value = ?tlv.value,
+                        "NACK attribute"
+                    );
+                }
                 let reason = crate::high::wps_enrollee::config_error(message);
                 error!(?reason, "registrar sent WSC NACK");
                 Err(Error::Message(reason.map_or_else(
@@ -546,8 +585,13 @@ impl<'a> Session<'a> {
                 Ok(Some(credentials))
             }
             WPS_MSG_M2D => {
-                warn!("registrar sent M2D: it does not support this PIN method");
-                Ok(None)
+                let ack = self.enrollee.wsc_ack_message()?;
+                self.send_wsc(id, WSC_OP_MSG, &ack)?;
+                warn!("registrar sent M2D: WPS pairing is not active on the AP");
+                Err(Error::Message(
+                    "WPS registrar answered M2D; start WPS PIN pairing on the router (enter the PIN in its WPS page) and retry"
+                        .to_string(),
+                ))
             }
             _ => Err(Error::Message(format!(
                 "unexpected WPS message type {kind:#04x}"
